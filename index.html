@@ -261,6 +261,86 @@ function countLiberties(r,c,p,vis){
 }
 
 /* ================= AI ================= */
+function localSpace(r, c) {
+  let visited = {};
+  let stack = [[r,c]];
+  let space = 0;
+
+  while(stack.length){
+    let [x,y] = stack.pop();
+    let k = x+","+y;
+    if(visited[k]) continue;
+    visited[k] = true;
+
+    if(board[x][y] === 0) space++;
+    else continue;
+
+    [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+      let nx=x+dr, ny=y+dc;
+      if(nx>=0 && ny>=0 && nx<SIZE && ny<SIZE)
+        stack.push([nx,ny]);
+    });
+  }
+  return space;
+}
+
+function areaIsHopeless(r, c, color) {
+  let space = localSpace(r, c);
+  let pot = eyePotential(r, c, color);
+
+  // 空間太小 + 沒眼潛力
+  if(space < 4 && pot === 0) return true;
+
+  return false;
+}
+
+function globalPotential(r, c, color) {
+  let space = localSpace(r, c);
+  let enemy = 0;
+
+  [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+    let nr=r+dr, nc=c+dc;
+    if(nr>=0 && nc>=0 && nr<SIZE && nc<SIZE){
+      if(board[nr][nc] === -color) enemy++;
+    }
+  });
+
+  return space * 5 - enemy * 4;
+}
+
+
+function eyePotential(r, c, color) {
+  let friendly = 0, enemy = 0;
+
+  [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+    let nr=r+dr, nc=c+dc;
+    if(nr>=0 && nc>=0 && nr<SIZE && nc<SIZE){
+      if(board[nr][nc] === color) friendly++;
+      if(board[nr][nc] === -color) enemy++;
+    }
+  });
+
+  if (friendly >= 3 && enemy === 0) return 2; // 幾乎是真眼
+  if (friendly === 2 && enemy === 0) return 1; // 假眼
+  return 0;
+}
+
+
+function simulateLiberties(r, c, color) {
+  let backup = board.map(row => row.slice());
+  board[r][c] = color;
+  let libs = countLiberties(r, c, color, new Set());
+  board = backup;
+  return libs;
+}
+
+function isBadFillEye(r, c, color) {
+  let pot = eyePotential(r, c, color);
+  return pot >= 1; // 假眼以上都不亂填
+}
+
+
+
 function simulateEat(r,c,color){
   let backup=board.map(row=>row.slice());
   board[r][c]=color;
@@ -292,13 +372,55 @@ function aiEasy(){
 }
 
 function aiSmart(){
-  let best=null,score=-999;
-  for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++){
-    if(board[r][c]!==0||!isLegalMove(r,c,-1))continue;
-    if(simulateEat(r,c,-1)>0)return[r,c];
-    let s=Math.random();
-    if(s>score){score=s;best=[r,c];}
+  let best = null;
+  let bestScore = -99999;
+
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(board[r][c]!==0) continue;
+      if(!isLegalMove(r,c,-1)) continue;
+
+      // 不亂填眼
+      if(isBadFillEye(r,c,-1)) continue;
+
+      let score = 0;
+
+      // ① 吃子
+      let eat = simulateEat(r,c,-1);
+      score += eat * 120;
+
+      // ② 氣數
+      let libs = simulateLiberties(r,c,-1);
+      if(libs <= 1) score -= 1000;
+      else score += libs * 8;
+
+      // ③ 眼潛力
+      let pot = eyePotential(r,c,-1);
+      score += pot * 60;
+
+      // ④ 如果這區沒救 → 大扣分
+      if(areaIsHopeless(r,c,-1))
+        score -= 300;
+
+      // ⑤ 全盤發展價值（轉戰場！）
+      score += globalPotential(r,c,-1);
+
+      // ⑥ 靠自己棋
+      [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+        let nr=r+dr, nc=c+dc;
+        if(nr>=0 && nc>=0 && nr<SIZE && nc<SIZE){
+          if(board[nr][nc]===-1) score += 6;
+          if(board[nr][nc]===1) score += 2;
+        }
+      });
+
+      if(score > bestScore){
+        bestScore = score;
+        best = [r,c];
+      }
+    }
   }
+
   return best;
 }
 
