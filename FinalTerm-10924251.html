@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>10924251 -FinalTerm</title>
+<style>
+body{background:#2c3e50;color:#fff;text-align:center;font-family:Arial}
+canvas{background:#deb887;border:6px solid #654321;margin-top:10px}
+button{margin:6px;padding:8px 14px;font-size:16px;border-radius:6px}
+.status{margin-top:12px;font-size:18px}
+</style>
+</head>
+
+<body>
+
+<h1>九路圍棋</h1>
+
+<div style="margin-bottom:6px;">
+對戰模式：
+<select id="gameMode">
+  <option value="ai">人機對戰</option>
+  <option value="pvp">雙人對戰</option>
+</select>
+</div>
+
+<div style="margin-bottom:10px;">
+AI 難度：
+<select id="aiLevel">
+  <option value="1">簡單</option>
+  <option value="2">困難</option>
+</select>
+</div>
+
+<canvas id="goBoard" width="450" height="450"></canvas>
+
+<div>
+<button onclick="pass()">讓子</button>
+<button onclick="undo()">悔棋</button>
+<button onclick="showScoreTemp()">顯示佔目</button>
+<button onclick="newGame()">新局</button>
+</div>
+
+<div class="status" id="status"></div>
+
+<audio id="audio_black" src="https://cdn.jsdelivr.net/gh/johnson20041001/go-sound/black.mp3"></audio>
+<audio id="audio_white" src="https://cdn.jsdelivr.net/gh/johnson20041001/go-sound/white.mp3"></audio>
+
+<script>
+/* ================= 基本設定 ================= */
+const SIZE=9,GAP=50,OFFSET=25;
+const canvas=document.getElementById("goBoard");
+const ctx=canvas.getContext("2d");
+
+let board,currentPlayer,passCount;
+let gameOver=false,inScoring=false;
+let lastMove=null;
+let history=[];
+
+/* ================= 對戰模式 ================= */
+function isPvP(){
+  return document.getElementById("gameMode").value==="pvp";
+}
+
+/* ================= 音效解鎖 ================= */
+let audioUnlocked=false;
+
+function unlockAudio(){
+  if(audioUnlocked) return;
+  ["audio_black","audio_white"].forEach(id=>{
+    const a=document.getElementById(id);
+    a.volume=0;
+    a.play().then(()=>{
+      a.pause();a.currentTime=0;a.volume=1;
+    });
+  });
+  audioUnlocked=true;
+}
+
+function playSound(id){
+  const a=document.getElementById(id);
+  a.currentTime=0;
+  a.play();
+}
+
+/* ================= 動畫系統 ================= */
+let animations=[];
+
+function animate(){
+  ctx.clearRect(0,0,450,450);
+  drawBoardLines();
+  drawStones();
+  runAnimations();
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+/* ================= 初始化 ================= */
+function newGame(){
+  board=Array.from({length:SIZE},()=>Array(SIZE).fill(0));
+  currentPlayer=1;
+  passCount=0;
+  gameOver=false;
+  inScoring=false;
+  lastMove=null;
+  history=[];
+  updateStatus();
+}
+newGame();
+
+/* ================= 繪圖 ================= */
+function drawBoardLines(){
+  ctx.strokeStyle="#000";
+  for(let i=0;i<SIZE;i++){
+    ctx.beginPath();
+    ctx.moveTo(OFFSET,OFFSET+i*GAP);
+    ctx.lineTo(OFFSET+(SIZE-1)*GAP,OFFSET+i*GAP);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(OFFSET+i*GAP,OFFSET);
+    ctx.lineTo(OFFSET+i*GAP,OFFSET+(SIZE-1)*GAP);
+    ctx.stroke();
+  }
+}
+
+function drawStones(){
+  for(let r=0;r<SIZE;r++)
+    for(let c=0;c<SIZE;c++)
+      if(board[r][c]!==0)
+        drawStoneAt(r,c,board[r][c],1);
+
+  if(lastMove){
+    const [r,c]=lastMove;
+    ctx.beginPath();
+    ctx.arc(OFFSET+c*GAP,OFFSET+r*GAP,6,0,Math.PI*2);
+    ctx.fillStyle="red";
+    ctx.fill();
+  }
+}
+
+function drawStoneAt(r,c,color,scale){
+  let x=OFFSET+c*GAP;
+  let y=OFFSET+r*GAP;
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.scale(scale,scale);
+  ctx.beginPath();
+  ctx.arc(0,0,18,0,Math.PI*2);
+  ctx.fillStyle=color===1?"black":"white";
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ================= 動畫 ================= */
+function runAnimations(){
+  let now=performance.now();
+  animations=animations.filter(anim=>{
+    let t=(now-anim.start)/anim.duration;
+    if(t>1)t=1;
+    if(anim.type==="place")
+      drawStoneAt(anim.r,anim.c,anim.color,1);
+    if(anim.type==="capture"){
+      ctx.save();
+      ctx.globalAlpha=1-t;
+      ctx.translate(0,-20*t);
+      drawStoneAt(anim.r,anim.c,anim.color,1);
+      ctx.restore();
+    }
+    return t<1;
+  });
+}
+
+function addPlaceAnim(r,c,color){
+  animations.push({type:"place",r,c,color,start:performance.now(),duration:200});
+}
+function addCaptureAnim(r,c,color){
+  animations.push({type:"capture",r,c,color,start:performance.now(),duration:300});
+}
+
+/* ================= 點擊下棋 ================= */
+canvas.onclick=e=>{
+  unlockAudio();
+  if(gameOver||inScoring) return;
+  if(!isPvP() && currentPlayer!==1) return;
+
+  const r=Math.round((e.offsetY-OFFSET)/GAP);
+  const c=Math.round((e.offsetX-OFFSET)/GAP);
+  if(r<0||c<0||r>=SIZE||c>=SIZE) return;
+  if(board[r][c]!==0) return;
+  if(!isLegalMove(r,c,currentPlayer)) return;
+
+  saveHistory();
+  placeStone(r,c,currentPlayer);
+  addPlaceAnim(r,c,currentPlayer);
+  playSound(currentPlayer===1?"audio_black":"audio_white");
+
+  lastMove=[r,c];
+  passCount=0;
+  currentPlayer*=-1;
+  updateStatus();
+
+  if(currentPlayer===-1 && !isPvP())
+    setTimeout(aiMove,150);
+};
+
+/* ================= 合法判斷 / 吃子 ================= */
+function isLegalMove(r,c,p){
+  const backup=board.map(row=>row.slice());
+  board[r][c]=p;
+  let eaten=removeCapturedSim(-p);
+  let libs=countLiberties(r,c,p,new Set());
+  board=backup;
+  return libs>0||eaten>0;
+}
+
+function placeStone(r,c,p){
+  board[r][c]=p;
+  let captures=[];
+  for(let rr=0;rr<SIZE;rr++)
+    for(let cc=0;cc<SIZE;cc++)
+      if(board[rr][cc]===-p && countLiberties(rr,cc,-p,new Set())===0)
+        captures.push([rr,cc]);
+
+  captures.forEach(([rr,cc])=>addCaptureAnim(rr,cc,-p));
+  setTimeout(()=>captures.forEach(([rr,cc])=>board[rr][cc]=0),150);
+}
+
+function removeCapturedSim(p){
+  let cnt=0;
+  for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)
+    if(board[r][c]===p && countLiberties(r,c,p,new Set())===0)
+      cnt+=removeGroupSim(r,c,p,new Set());
+  return cnt;
+}
+
+function removeGroupSim(r,c,p,vis){
+  const k=r+","+c;
+  if(vis.has(k))return 0;
+  vis.add(k);board[r][c]=0;
+  let cnt=1;
+  [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+    let nr=r+dr,nc=c+dc;
+    if(nr>=0&&nc>=0&&nr<SIZE&&nc<SIZE&&board[nr][nc]===p)
+      cnt+=removeGroupSim(nr,nc,p,vis);
+  });
+  return cnt;
+}
+
+function countLiberties(r,c,p,vis){
+  const k=r+","+c;
+  if(vis.has(k))return 0;
+  vis.add(k);
+  let cnt=0;
+  [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+    let nr=r+dr,nc=c+dc;
+    if(nr<0||nc<0||nr>=SIZE||nc>=SIZE)return;
+    if(board[nr][nc]===0)cnt++;
+    else if(board[nr][nc]===p)cnt+=countLiberties(nr,nc,p,vis);
+  });
+  return cnt;
+}
+
+/* ================= AI ================= */
+function simulateEat(r,c,color){
+  let backup=board.map(row=>row.slice());
+  board[r][c]=color;
+  let eat=removeCapturedSim(-color);
+  board=backup;
+  return eat;
+}
+
+function aiMove(){
+  let level=+document.getElementById("aiLevel").value;
+  let move=(level===1?aiEasy():aiSmart());
+  if(!move){pass();return;}
+
+  saveHistory();
+  placeStone(move[0],move[1],-1);
+  addPlaceAnim(move[0],move[1],-1);
+  playSound("audio_white");
+
+  lastMove=move;
+  currentPlayer=1;
+  updateStatus();
+}
+
+function aiEasy(){
+  let m=[];
+  for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)
+    if(board[r][c]===0&&isLegalMove(r,c,-1))m.push([r,c]);
+  return m.length?m[Math.floor(Math.random()*m.length)]:null;
+}
+
+function aiSmart(){
+  let best=null,score=-999;
+  for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++){
+    if(board[r][c]!==0||!isLegalMove(r,c,-1))continue;
+    if(simulateEat(r,c,-1)>0)return[r,c];
+    let s=Math.random();
+    if(s>score){score=s;best=[r,c];}
+  }
+  return best;
+}
+
+/* ================= PASS / 悔棋 ================= */
+function saveHistory(){
+  history.push({
+    board:board.map(r=>r.slice()),
+    currentPlayer,passCount,lastMove
+  });
+}
+
+function undo(){
+  if(history.length<2)return alert("無法悔棋");
+  history.pop();
+  let h=history.pop();
+  board=h.board.map(r=>r.slice());
+  currentPlayer=1;
+  passCount=h.passCount;
+  lastMove=h.lastMove;
+  updateStatus();
+}
+
+function pass(){
+  saveHistory();
+  passCount++;
+  currentPlayer*=-1;
+  if(passCount>=2){
+    gameOver=true;
+    inScoring=true;
+    trueScore();
+    return;
+  }
+  updateStatus();
+  if(currentPlayer===-1&&!isPvP())
+    setTimeout(aiMove,200);
+}
+
+/* ================= 計分（完整） ================= */
+function showScoreTemp(){ alert(getScoreText()); }
+function trueScore(){ alert(getScoreText()); }
+
+function getScoreText(){
+  let {white}=calcScore();     // 只信任白棋
+  let black = SIZE*SIZE - white;  // 9x9 = 81
+  return `佔目\n黑棋：${black}\n白棋：${white}`;
+}
+
+function calcScore(){
+  let black=0,white=0;
+  const visited={},alive=Array.from({length:SIZE},()=>Array(SIZE).fill(false));
+
+  for(let r=0;r<SIZE;r++)
+    for(let c=0;c<SIZE;c++){
+      if(board[r][c]!==0 && !visited[r+","+c]){
+        const group=[],libs=new Set(),color=board[r][c];
+        const stack=[[r,c]];
+        while(stack.length){
+          const [x,y]=stack.pop(),k=x+","+y;
+          if(visited[k])continue;
+          visited[k]=true;
+          group.push([x,y]);
+          [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+            let nx=x+dr,ny=y+dc;
+            if(nx>=0&&ny>=0&&nx<SIZE&&ny<SIZE){
+              if(board[nx][ny]===0) libs.add(nx+","+ny);
+              else if(board[nx][ny]===color) stack.push([nx,ny]);
+            }
+          });
+        }
+        const eyes=countEyes(group,color);
+        if(eyes>=2||libs.size>=3){
+          group.forEach(([x,y])=>{
+            alive[x][y]=true;
+            color===1?black++:white++;
+          });
+        }
+      }
+    }
+
+  const visited2={};
+  for(let r=0;r<SIZE;r++)
+    for(let c=0;c<SIZE;c++){
+      if(board[r][c]===0&&!visited2[r+","+c]){
+        let res=flood(r,c,visited2,alive);
+        if(res.owner===1) black+=res.count;
+        if(res.owner===-1) white+=res.count;
+      }
+    }
+
+  return {black,white};
+}
+
+function countEyes(group,color){
+  let eyes=0,seen={};
+  group.forEach(([r,c])=>{
+    [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+      let nr=r+dr,nc=c+dc;
+      if(nr>=0&&nc>=0&&nr<SIZE&&nc<SIZE){
+        let key=nr+","+nc;
+        if(board[nr][nc]===0&&!seen[key]){
+          let ok=true,stack=[[nr,nc]];
+          while(stack.length){
+            let [x,y]=stack.pop(),k=x+","+y;
+            if(seen[k])continue;
+            seen[k]=true;
+            [[1,0],[-1,0],[0,1],[0,-1]].forEach(([ar,ac])=>{
+              let nx=x+ar,ny=y+ac;
+              if(nx>=0&&ny>=0&&nx<SIZE&&ny<SIZE){
+                if(board[nx][ny]===0) stack.push([nx,ny]);
+                else if(board[nx][ny]!==color) ok=false;
+              }
+            });
+          }
+          if(ok) eyes++;
+        }
+      }
+    });
+  });
+  return eyes;
+}
+
+function flood(r,c,vis,alive){
+  let stack=[[r,c]],cells=[],owner=0;
+  while(stack.length){
+    let [x,y]=stack.pop(),k=x+","+y;
+    if(vis[k])continue;
+    vis[k]=true;cells.push([x,y]);
+    [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+      let nx=x+dr,ny=y+dc;
+      if(nx>=0&&ny>=0&&nx<SIZE&&ny<SIZE){
+        if(board[nx][ny]===0) stack.push([nx,ny]);
+        else if(alive[nx][ny]){
+          if(owner===0) owner=board[nx][ny];
+          else if(owner!==board[nx][ny]) owner=999;
+        }
+      }
+    });
+  }
+  return {count:cells.length,owner};
+}
+
+function updateStatus(){
+  document.getElementById("status").textContent=
+    inScoring?"終局計算中…":(currentPlayer===1?"黑棋回合":"白棋回合");
+}
+</script>
+</body>
+</html>
